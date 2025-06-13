@@ -111,6 +111,9 @@ type VirtioSerial struct {
 	// PtyName must not be set when creating the VM, from a user perspective, it's read-only,
 	// vfkit will set it during VM startup.
 	PtyName string `json:"ptyName,omitempty"`
+
+	// WebSocket host and port in "host:port" form
+	WebSocket string `json:"webSocket,omitempty"`
 }
 
 type NBDSynchronizationMode string
@@ -240,6 +243,12 @@ func VirtioSerialNewPty() (VirtioDevice, error) {
 	}, nil
 }
 
+func VirtioSerialNewWebSocket() (*VirtioSerial, error) {
+	return &VirtioSerial{
+		WebSocket: "127.0.0.1:3001",
+	}, nil
+}
+
 func (dev *VirtioSerial) validate() error {
 	if dev.LogFile != "" && dev.UsesStdio {
 		return fmt.Errorf("'logFilePath' and 'stdio' cannot be set at the same time")
@@ -250,8 +259,21 @@ func (dev *VirtioSerial) validate() error {
 	if dev.UsesStdio && dev.UsesPty {
 		return fmt.Errorf("'stdio' and 'pty' cannot be set at the same time")
 	}
-	if dev.LogFile == "" && !dev.UsesStdio && !dev.UsesPty {
-		return fmt.Errorf("one of 'logFilePath', 'stdio' or 'pty' must be set")
+
+	if dev.LogFile != "" && dev.WebSocket != "" {
+		return fmt.Errorf("'logFilePath' and 'webSocket' cannot be set at the same time")
+	}
+
+	if dev.WebSocket != "" && dev.UsesPty {
+		return fmt.Errorf("'webSocket' and 'pty' cannot be set at the same time")
+	}
+
+	if dev.WebSocket != "" && dev.UsesStdio {
+		return fmt.Errorf("'webSocket' and 'stdio' cannot be set at the same time")
+	}
+
+	if dev.LogFile == "" && !dev.UsesStdio && !dev.UsesPty && dev.WebSocket == "" {
+		return fmt.Errorf("one of 'logFilePath', 'stdio', 'pty' or 'websocket' must be set")
 	}
 
 	return nil
@@ -266,6 +288,8 @@ func (dev *VirtioSerial) ToCmdLine() ([]string, error) {
 		return []string{"--device", "virtio-serial,stdio"}, nil
 	case dev.UsesPty:
 		return []string{"--device", "virtio-serial,pty"}, nil
+	case dev.WebSocket != "":
+		return []string{"--device", fmt.Sprintf("virtio-serial,webSocket=%s", dev.WebSocket)}, nil
 	case dev.LogFile != "":
 		fallthrough
 	default:
@@ -285,6 +309,8 @@ func (dev *VirtioSerial) FromOptions(options []option) error {
 			dev.UsesStdio = true
 		case "pty":
 			dev.UsesPty = true
+		case "webSocket":
+			dev.WebSocket = option.value
 		default:
 			return fmt.Errorf("unknown option for virtio-serial devices: %s", option.key)
 		}

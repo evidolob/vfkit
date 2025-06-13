@@ -280,6 +280,35 @@ func (dev *VirtioSerial) toVz() (*vz.VirtioConsoleDeviceSerialPortConfiguration,
 	return vz.NewVirtioConsoleDeviceSerialPortConfiguration(serialPortAttachment)
 }
 
+func (dev *VirtioSerial) toVzSerialPort() (*vz.VirtioConsoleDeviceSerialPortConfiguration, error) {
+	master, slave, err := termios.Pty()
+	if err != nil {
+		return nil, err
+	}
+
+	// the master fd and slave fd must stay open for vfkit's lifetime
+	util.RegisterExitHandler(func() {
+		_ = master.Close()
+		_ = slave.Close()
+	})
+
+	dev.PtyName = slave.Name()
+
+	if err := setRawMode(master); err != nil {
+		return nil, err
+	}
+	var serialPortAttachment vz.SerialPortAttachment
+	var retErr error
+
+	serialPortAttachment, retErr = vz.NewFileHandleSerialPortAttachment(master, master)
+
+	if retErr != nil {
+		return nil, retErr
+	}
+
+	return vz.NewVirtioConsoleDeviceSerialPortConfiguration(serialPortAttachment)
+}
+
 func (dev *VirtioSerial) toVzConsole() (*vz.VirtioConsolePortConfiguration, error) {
 	master, slave, err := termios.Pty()
 	if err != nil {
@@ -324,6 +353,12 @@ func (dev *VirtioSerial) AddToVirtualMachineConfig(vmConfig *VirtualMachineConfi
 		}
 		vmConfig.consolePortsConfiguration = append(vmConfig.consolePortsConfiguration, consolePortConfig)
 		log.Infof("Using PTY (pty path: %s)", dev.PtyName)
+	} else if dev.WebSocket != "" {
+		consolePortConfig, err := dev.toVzSerialPort()
+		if err != nil {
+			return err
+		}
+		vmConfig.serialPortsConfiguration = append(vmConfig.serialPortsConfiguration, consolePortConfig)
 	} else {
 		consoleConfig, err := dev.toVz()
 		if err != nil {

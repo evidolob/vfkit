@@ -188,6 +188,17 @@ func (vm *VirtualMachine) NetworkBlockDevice(deviceID string) *NetworkBlockDevic
 	return nil
 }
 
+func (vm *VirtualMachine) SerialDevices() []*VirtioSerial {
+	var serialDevs []*VirtioSerial
+	for _, dev := range vm.Devices {
+		if serialDev, isSerial := dev.(*VirtioSerial); isSerial {
+			serialDevs = append(serialDevs, serialDev)
+		}
+	}
+
+	return serialDevs
+}
+
 // AddDevice adds a dev to vm. This device can be created with one of the
 // VirtioXXXNew methods.
 func (vm *VirtualMachine) AddDevice(dev VirtioDevice) error {

@@ -135,6 +135,20 @@ var virtioDevTests = map[string]virtioDevTest{
 		},
 		expectedCmdLine: []string{"--device", "virtio-serial,pty"},
 	},
+	"NewVirtioSerialWebSocket": {
+		newDev: func() (VirtioDevice, error) {
+			dev, err := VirtioSerialNewWebSocket()
+			if err != nil {
+				return nil, err
+			}
+			dev.WebSocket = "127.0.0.1:3001"
+			return dev, nil
+		},
+		expectedDev: &VirtioSerial{
+			WebSocket: "127.0.0.1:3001",
+		},
+		expectedCmdLine: []string{"--device", "virtio-serial,webSocket=127.0.0.1:3001"},
+	},
 	"NewVirtioNet": {
 		newDev: func() (VirtioDevice, error) { return VirtioNetNew("") },
 		expectedDev: &VirtioNet{
@@ -266,7 +280,7 @@ func testVirtioDev(t *testing.T, test *virtioDevTest) {
 
 	cmdLine, err := dev.ToCmdLine()
 	require.NoError(t, err)
-	assert.Equal(t, cmdLine, test.expectedCmdLine)
+	assert.Equal(t, test.expectedCmdLine, cmdLine, t.Name())
 
 	dev, err = deviceFromCmdLine(cmdLine[1])
 	require.NoError(t, err)

@@ -29,6 +29,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -37,12 +38,20 @@ import (
 	"github.com/crc-org/vfkit/pkg/config"
 	"github.com/crc-org/vfkit/pkg/rest"
 	restvf "github.com/crc-org/vfkit/pkg/rest/vf"
+	"github.com/crc-org/vfkit/pkg/util"
 	"github.com/crc-org/vfkit/pkg/vf"
+	"github.com/gorilla/websocket"
 	"github.com/kdomanski/iso9660"
 	log "github.com/sirupsen/logrus"
-
-	"github.com/crc-org/vfkit/pkg/util"
 )
+
+var upgrader = websocket.Upgrader{
+	ReadBufferSize:  1,
+	WriteBufferSize: 1,
+	CheckOrigin: func(_ *http.Request) bool {
+		return true
+	},
+}
 
 func newLegacyBootloader(opts *cmdline.Options) config.Bootloader {
 	if opts.VmlinuzPath == "" && opts.KernelCmdline == "" && opts.InitrdPath == "" {
@@ -178,6 +187,23 @@ func runVirtualMachine(vmConfig *config.VirtualMachine, vm *vf.VirtualMachine) e
 
 	if err := vm.Start(); err != nil {
 		return err
+	}
+
+	serial := vmConfig.SerialDevices()
+	if len(serial) > 0 {
+		var wsDevice *config.VirtioSerial
+		for _, dev := range serial {
+			if dev.WebSocket != "" {
+				wsDevice = dev
+				break
+			}
+		}
+
+		if wsDevice != nil {
+			if err := startWebSocketServer(wsDevice); err != nil {
+				return err
+			}
+		}
 	}
 
 	if err := waitForVMState(vm, vz.VirtualMachineStateRunning, time.After(5*time.Second)); err != nil {
@@ -365,4 +391,95 @@ func createCloudInitISO(files map[string]io.Reader) (string, error) {
 	}
 
 	return isoFile.Name(), nil
+}
+
+func startWebSocketServer(wsDevice *config.VirtioSerial) error {
+
+	mux := http.NewServeMux()
+	var hasWSClient atomic.Bool
+
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		log.Errorf("On connection, hasWSClient: %v", hasWSClient.Load())
+		// as we have only one pty interface to interact with, we limited to one client
+		if hasWSClient.Load() {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte("WebSocket device support only one connection"))
+			log.Error("WebSocket device must have only one client")
+			return
+		}
+
+		hasWSClient.Store(true)
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			log.Fatalf("Websocket upgrade failed: %s\n", err)
+		}
+
+		util.RegisterExitHandler(func() {
+			if conn != nil && hasWSClient.Load() {
+				conn.Close()
+			}
+		})
+
+		ptyFile, err := os.OpenFile(wsDevice.PtyName, os.O_RDWR, 0600)
+		if err != nil {
+			log.Fatalf("failed to open pty file: %s\n", err)
+		}
+
+		var connectionClosed atomic.Bool
+		conn.SetCloseHandler(func(code int, text string) error {
+			log.Errorf("WebSocket connection closed, code: %d, text: %s", code, text)
+			connectionClosed.Store(true)
+			hasWSClient.Store(false)
+			return ptyFile.Close()
+		})
+
+		go func() {
+			buf := make([]byte, 128)
+			for {
+				if connectionClosed.Load() {
+					return
+				}
+
+				n, err := ptyFile.Read(buf)
+
+				if err != nil {
+					log.Errorf("Failed to read from pty master: %s", err)
+					return
+				}
+				err = conn.WriteMessage(websocket.BinaryMessage, buf[:n])
+
+				if err != nil {
+					log.Errorf("Failed to send %d bytes on websocket: %s", n, err)
+					return
+				}
+			}
+		}()
+
+		// read from the web socket, copying to the pty master
+		for {
+			if connectionClosed.Load() {
+				return
+			}
+			mt, payload, err := conn.ReadMessage()
+			if err != nil {
+				if err != io.EOF {
+					log.Errorf("conn.ReadMessage failed: %s\n", err)
+					return
+				}
+			}
+
+			switch mt {
+			case websocket.BinaryMessage:
+				_, _ = ptyFile.Write(payload)
+			case websocket.TextMessage:
+				log.Errorf("Ingnoring text message: %s\n", payload)
+			default:
+				log.Printf("Invalid message type %d\n", mt)
+				return
+			}
+		}
+
+	})
+	log.Infof("WebSocket server is on %s", wsDevice.WebSocket)
+	return http.ListenAndServe(wsDevice.WebSocket, mux)
 }

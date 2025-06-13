@@ -257,7 +257,7 @@ var jsonStabilityTests = map[string]jsonStabilityTest{
 	},
 	"VirtioSerial": {
 		obj:          &VirtioSerial{},
-		expectedJSON: `{"kind":"virtioserial","logFile":"LogFile","ptyName":"PtyName","usesPty":true,"usesStdio":true}`,
+		expectedJSON: `{"kind":"virtioserial","logFile":"LogFile","ptyName":"PtyName","usesPty":true,"usesStdio":true,"webSocket":"WebSocket"}`,
 	},
 	"VirtioVsock": {
 		obj:          &VirtioVsock{},
